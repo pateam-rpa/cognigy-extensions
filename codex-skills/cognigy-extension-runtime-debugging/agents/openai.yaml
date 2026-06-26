@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cognigy Extension Debugging"
+  short_description: "Debug Cognigy extension runtime failures"
+  default_prompt: "Use $cognigy-extension-runtime-debugging to diagnose this pasted Cognigy extension error."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cognigy Extension Packaging"
+  short_description: "Package and release Cognigy extensions"
+  default_prompt: "Use $cognigy-extension-packaging-release to create verified Cognigy upload and source artifacts."

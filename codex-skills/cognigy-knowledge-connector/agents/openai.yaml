@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cognigy Knowledge Connector"
+  short_description: "Build Cognigy Knowledge connector extensions"
+  default_prompt: "Use $cognigy-knowledge-connector to debug a Cognigy Knowledge Connector import."
