@@ -1,7 +1,0 @@
-.DS_Store
-node_modules/
-build/
-*.tar.gz
-*-source*.zip
-npm-debug.log*
-.security-reports/
