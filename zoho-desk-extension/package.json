@@ -1,7 +1,7 @@
 {
   "name": "zoho-desk",
-  "version": "0.3.10",
-  "description": "Cognigy extension for Zoho Desk ticket workflows.",
+  "version": "0.4.0",
+  "description": "Cognigy extension for Zoho Desk ticket workflows and article Knowledge imports.",
   "main": "build/module.js",
   "scripts": {
     "transpile": "tsc -p .",
@@ -16,7 +16,9 @@
     "extension",
     "zoho",
     "desk",
-    "tickets"
+    "tickets",
+    "knowledge",
+    "articles"
   ],
   "author": "PAteam",
   "license": "MIT",

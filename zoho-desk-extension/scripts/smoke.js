@@ -4,15 +4,25 @@ const axios = require("axios");
 const extension = require("../build/module.js").default;
 const { parseJsonStringArray } = require("../build/lib/json.js");
 const { storeResult } = require("../build/lib/storage.js");
-const { integerInRange } = require("../build/lib/validation.js");
+const { chunkText, stripHtml } = require("../build/lib/text.js");
+const { integerInRange, optionalBoolean } = require("../build/lib/validation.js");
 const { getZohoDeskBaseUrls, normalizeConnection, serializeZohoError, zohoDeskRequest } = require("../build/lib/zohoDeskClient.js");
+const {
+	deleteStaleSources,
+	listArticlesForCategories,
+	resolveArticleScope,
+	validatePermission
+} = require("../build/knowledge-connectors/zohoDeskKnowledgeConnector.js");
 const connectionTypes = extension.connections.map(connection => connection.type);
+const knowledgeTypes = (extension.knowledge || []).map(connector => connector.type);
 const nodeTypes = extension.nodes.map(node => node.type);
 
 assert(connectionTypes.includes("zoho-desk-oauth"), "Zoho Desk connection is not registered.");
+assert.deepStrictEqual(knowledgeTypes, ["zohoDeskKnowledgeConnector"]);
 
 const zohoConnection = extension.connections.find(connection => connection.type === "zoho-desk-oauth");
 const connectionFieldNames = zohoConnection.fields.map(field => field.fieldName);
+const zohoKnowledgeConnector = extension.knowledge.find(connector => connector.type === "zohoDeskKnowledgeConnector");
 
 assert.strictEqual(zohoConnection.label, "Zoho Desk Self Client OAuth");
 assert.deepStrictEqual(connectionFieldNames, [
@@ -21,6 +31,25 @@ assert.deepStrictEqual(connectionFieldNames, [
 	"refreshToken",
 	"dataCenter"
 ]);
+assert.strictEqual(zohoKnowledgeConnector.label, "Zoho Desk Articles");
+assert.strictEqual(typeof zohoKnowledgeConnector.function, "function");
+assert.deepStrictEqual(zohoKnowledgeConnector.sections, [], "Knowledge connector should not define custom sections.");
+assert.deepStrictEqual(zohoKnowledgeConnector.form, [], "Knowledge connector should not define a custom form.");
+
+const knowledgeFieldDefaults = Object.fromEntries(zohoKnowledgeConnector.fields.map(field => [field.key, field.defaultValue]));
+assert.strictEqual(knowledgeFieldDefaults.knowledgeSourcePrefix, "Zoho Desk");
+assert.strictEqual(knowledgeFieldDefaults.includeChildCategories, true);
+assert.strictEqual(knowledgeFieldDefaults.maxArticles, 50);
+assert.strictEqual(knowledgeFieldDefaults.maxChunkCharacters, 2000);
+assert.deepStrictEqual(knowledgeFieldDefaults.tags, ["zoho-desk", "articles"]);
+
+zohoKnowledgeConnector.fields.forEach(field => {
+	assert.strictEqual(typeof field.label, "string", `${field.key} label should be a plain string.`);
+
+	if (field.description) {
+		assert.strictEqual(typeof field.description, "string", `${field.key} description should be a plain string.`);
+	}
+});
 
 [
 	"createTicket",
@@ -170,6 +199,601 @@ const readHeader = (headers, key) => {
 	}
 
 	return headers && (headers[key] || headers[key.toLowerCase()]);
+};
+
+const knowledgeConnection = {
+	clientId: "client-id",
+	clientSecret: "client-secret",
+	refreshToken: "refresh-token",
+	orgId: "123456789",
+	dataCenter: "eu"
+};
+
+const knowledgeTree = {
+	id: "root-1",
+	name: "Support",
+	translations: [
+		{
+			name: "Help"
+		}
+	],
+	children: [
+		{
+			id: "getting-started-id",
+			name: "Getting Started",
+			children: [
+				{
+					id: "agents-id",
+					name: "Agents",
+					children: []
+				}
+			]
+		}
+	]
+};
+
+const withAxiosAdapter = async (adapter, callback) => {
+	const originalAdapter = axios.defaults.adapter;
+
+	axios.defaults.adapter = adapter;
+
+	try {
+		await callback();
+	} finally {
+		axios.defaults.adapter = originalAdapter;
+	}
+};
+
+const tokenOr = (config, data) => {
+	if (config.url.endsWith("/oauth/v2/token")) {
+		return {
+			config,
+			data: {
+				access_token: "access-token"
+			},
+			headers: {},
+			status: 200,
+			statusText: "OK"
+		};
+	}
+
+	return data();
+};
+
+const assertKnowledgeValidationAndTextHelpers = () => {
+	assert.strictEqual(validatePermission("all"), "ALL");
+	assert.strictEqual(validatePermission(""), undefined);
+	assert.throws(() => validatePermission("PUBLIC"), /Permission must be empty/);
+	assert.strictEqual(optionalBoolean(true, false), true);
+	assert.strictEqual(optionalBoolean(false, true), false);
+
+	assert.strictEqual(stripHtml("<script>bad()</script><p>A&nbsp;B<br>C</p>"), "A B\nC");
+	assert(chunkText(`Intro\n\n${"x".repeat(550)}`, 500).every(chunk => chunk.length <= 500));
+};
+
+const assertKnowledgeScopeNameResolution = async () => {
+	await withAxiosAdapter(async config => tokenOr(config, () => {
+		if (config.url.endsWith("/kbRootCategories")) {
+			return {
+				config,
+				data: {
+					data: [
+						knowledgeTree
+					]
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		if (config.url.endsWith("/kbRootCategories/root-1/categoryTree")) {
+			return {
+				config,
+				data: knowledgeTree,
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		throw new Error(`Unexpected request URL: ${config.url}`);
+	}), async () => {
+		const scope = await resolveArticleScope(knowledgeConnection, {
+			rootCategoryName: "support",
+			categoryPath: "Getting Started",
+			includeChildCategories: true,
+			permission: "agents"
+		});
+
+		assert.strictEqual(scope.rootCategoryId, "root-1");
+		assert.strictEqual(scope.selectedCategoryId, "getting-started-id");
+		assert.deepStrictEqual(scope.categoryIds, [
+			"getting-started-id",
+			"agents-id"
+		]);
+		assert.strictEqual(scope.scopeKey, "root-root-1:category-getting-started-id:children-true:permission-AGENTS");
+	});
+};
+
+const assertKnowledgeAmbiguousNamesFail = async () => {
+	await assert.rejects(() => withAxiosAdapter(async config => tokenOr(config, () => {
+		if (config.url.endsWith("/kbRootCategories")) {
+			return {
+				config,
+				data: {
+					data: [
+						{
+							id: "root-1",
+							name: "Support"
+						},
+						{
+							id: "root-2",
+							translations: [
+								{
+									name: "support"
+								}
+							]
+						}
+					]
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		throw new Error(`Unexpected request URL: ${config.url}`);
+	}), async () => {
+		await resolveArticleScope(knowledgeConnection, {
+			rootCategoryName: "Support"
+		});
+	}), /ambiguous.*Root Category ID/);
+
+	await assert.rejects(() => withAxiosAdapter(async config => tokenOr(config, () => {
+		if (config.url.endsWith("/kbRootCategories/root-1/categoryTree")) {
+			return {
+				config,
+				data: {
+					id: "root-1",
+					name: "Support",
+					children: [
+						{
+							id: "agents-1",
+							name: "Agents"
+						},
+						{
+							id: "agents-2",
+							translations: [
+								{
+									name: "agents"
+								}
+							]
+						}
+					]
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		throw new Error(`Unexpected request URL: ${config.url}`);
+	}), async () => {
+		await resolveArticleScope(knowledgeConnection, {
+			rootCategoryId: "root-1",
+			categoryPath: "Agents"
+		});
+	}), /ambiguous.*Category ID/);
+};
+
+const assertKnowledgeExactIdFallback = async () => {
+	const rootListRequests = [];
+
+	await withAxiosAdapter(async config => tokenOr(config, () => {
+		if (config.url.endsWith("/kbRootCategories")) {
+			rootListRequests.push(config);
+		}
+
+		if (config.url.endsWith("/kbRootCategories/root-1/categoryTree")) {
+			return {
+				config,
+				data: knowledgeTree,
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		throw new Error(`Unexpected request URL: ${config.url}`);
+	}), async () => {
+		const scope = await resolveArticleScope(knowledgeConnection, {
+			rootCategoryId: "root-1",
+			categoryId: "agents-id",
+			includeChildCategories: false
+		});
+
+		assert.strictEqual(scope.selectedCategoryId, "agents-id");
+		assert.deepStrictEqual(scope.categoryIds, [
+			"agents-id"
+		]);
+	});
+
+	assert.deepStrictEqual(rootListRequests, []);
+};
+
+const assertKnowledgeArticlePagination = async () => {
+	const articleRequests = [];
+
+	await withAxiosAdapter(async config => tokenOr(config, () => {
+		if (config.url.endsWith("/articles")) {
+			articleRequests.push(config);
+
+			return {
+				config,
+				data: {
+					data: config.params.from === 0
+						? Array.from({ length: 50 }, (_item, index) => ({
+							id: `article-${index}`,
+							title: `Article ${index}`
+						}))
+						: [
+							{
+								id: "article-50",
+								title: "Article 50"
+							}
+						]
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		throw new Error(`Unexpected request URL: ${config.url}`);
+	}), async () => {
+		const result = await listArticlesForCategories(knowledgeConnection, ["agents-id"], 51, "AGENTS");
+
+		assert.strictEqual(result.articles.length, 51);
+		assert.strictEqual(result.truncated, false);
+	});
+
+	assert.deepStrictEqual(articleRequests.map(request => request.params), [
+		{
+			from: 0,
+			limit: 50,
+			status: "Published",
+			categoryId: "agents-id",
+			permission: "AGENTS"
+		},
+		{
+			from: 50,
+			limit: 50,
+			status: "Published",
+			categoryId: "agents-id",
+			permission: "AGENTS"
+		}
+	]);
+
+	await withAxiosAdapter(async config => tokenOr(config, () => {
+		if (config.url.endsWith("/articles")) {
+			return {
+				config,
+				data: {
+					data: Array.from({ length: 50 }, (_item, index) => ({
+						id: `full-page-article-${index}`,
+						title: `Full Page Article ${index}`
+					}))
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		throw new Error(`Unexpected request URL: ${config.url}`);
+	}), async () => {
+		const result = await listArticlesForCategories(knowledgeConnection, ["agents-id"], 50, undefined);
+
+		assert.strictEqual(result.articles.length, 50);
+		assert.strictEqual(result.truncated, true);
+	});
+};
+
+const assertKnowledgeConnectorImportsAndCleansScope = async () => {
+	const articleRequests = [];
+	const detailRequests = [];
+	const deletedSourceIds = [];
+	const chunks = [];
+	const scopeKey = "root-root-1:category-getting-started-id:children-true:permission-AGENTS";
+
+	await withAxiosAdapter(async config => tokenOr(config, () => {
+		if (config.url.endsWith("/kbRootCategories")) {
+			return {
+				config,
+				data: {
+					data: [
+						knowledgeTree
+					]
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		if (config.url.endsWith("/kbRootCategories/root-1/categoryTree")) {
+			return {
+				config,
+				data: knowledgeTree,
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		if (config.url.endsWith("/articles")) {
+			articleRequests.push(config);
+
+			return {
+				config,
+				data: {
+					data: config.params.categoryId === "getting-started-id"
+						? [
+							{
+								id: "article-1",
+								title: "One",
+								latestPublishedVersion: "1.0"
+							}
+						]
+						: [
+							{
+								id: "article-1",
+								title: "One duplicate",
+								latestPublishedVersion: "1.0"
+							},
+							{
+								id: "article-2",
+								title: "Two",
+								latestPublishedVersion: "null"
+							}
+						]
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		if (config.url.endsWith("/articles/article-1") || config.url.endsWith("/articles/article-2")) {
+			detailRequests.push(config);
+			const id = config.url.split("/").pop();
+
+			return {
+				config,
+				data: {
+					id,
+					title: id === "article-1" ? "One" : "Two",
+					summary: "Short &amp; <b>useful</b>",
+					answer: "<p>First paragraph.<br>Still first paragraph.</p><p>Second paragraph.</p>",
+					articleNumber: id === "article-1" ? "101" : "102",
+					categoryId: id === "article-1" ? "getting-started-id" : "agents-id",
+					category: {
+						id: id === "article-1" ? "getting-started-id" : "agents-id",
+						name: id === "article-1" ? "Getting Started" : "Agents"
+					},
+					latestPublishedVersion: id === "article-1" ? "1.0" : "2.0",
+					latestVersion: id === "article-1" ? "1.0" : "2.0",
+					modifiedTime: "2026-07-02T10:00:00.000Z",
+					permission: "AGENTS",
+					portalUrl: `https://desk.example.test/kb/articles/${id}`,
+					status: "Published",
+					webUrl: `https://desk.example.test/support/${id}`
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		throw new Error(`Unexpected request URL: ${config.url}`);
+	}), async () => {
+		await zohoKnowledgeConnector.function({
+			config: {
+				connection: knowledgeConnection,
+				knowledgeSourcePrefix: "Zoho Desk",
+				rootCategoryName: "Support",
+				categoryPath: "Getting Started",
+				includeChildCategories: true,
+				permission: "AGENTS",
+				maxArticles: "10",
+				maxChunkCharacters: "500",
+				tags: ["articles", "kb"]
+			},
+			sources: [
+				{
+					knowledgeSourceId: "stale-source",
+					name: "Zoho Desk: Support: Getting Started subtree: Stale",
+					externalIdentifier: `zohoDesk:published:${scopeKey}:article:stale`,
+					chunkCount: 1
+				},
+				{
+					knowledgeSourceId: "outside-source",
+					name: "Zoho Desk: Other: Stale",
+					externalIdentifier: "zohoDesk:published:root-other:category-other:children-true:permission-AGENTS:article:stale",
+					chunkCount: 1
+				}
+			],
+			api: {
+				upsertKnowledgeSource: async params => {
+					if (params.externalIdentifier.endsWith(":article:article-1")) {
+						return null;
+					}
+
+					assert.deepStrictEqual(params.tags, [
+						"zoho-desk",
+						"articles",
+						"kb"
+					]);
+					assert.strictEqual(params.description, "Zoho Desk article Two");
+					return {
+						knowledgeSourceId: "source-2"
+					};
+				},
+				createKnowledgeChunk: async params => {
+					chunks.push(params);
+					return {};
+				},
+				deleteKnowledgeSource: async params => {
+					deletedSourceIds.push(params.knowledgeSourceId);
+					return {};
+				}
+			}
+		});
+	});
+
+	assert.deepStrictEqual(articleRequests.map(request => request.params.categoryId), [
+		"getting-started-id",
+		"agents-id"
+	]);
+	assert.deepStrictEqual(detailRequests.map(request => request.params), [
+		{
+			version: "1.0"
+		},
+		{}
+	]);
+	assert.strictEqual(chunks.length, 1);
+	assert.strictEqual(chunks[0].knowledgeSourceId, "source-2");
+	assert(!chunks[0].text.includes("<b>"));
+	assert(chunks[0].text.includes("First paragraph.\nStill first paragraph."));
+	assert.strictEqual(chunks[0].data.categoryName, "Agents");
+	assert.strictEqual(chunks[0].data.rootCategoryName, "Support");
+	assert.strictEqual(chunks[0].data.selectedCategoryName, "Getting Started");
+	assert.deepStrictEqual(deletedSourceIds, ["stale-source"]);
+};
+
+const assertKnowledgeCleanupSkipsWhenTruncated = async () => {
+	const deletedSourceIds = [];
+
+	await withAxiosAdapter(async config => tokenOr(config, () => {
+		if (config.url.endsWith("/kbRootCategories/root-1/categoryTree")) {
+			return {
+				config,
+				data: knowledgeTree,
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		if (config.url.endsWith("/articles")) {
+			return {
+				config,
+				data: {
+					data: [
+						{
+							id: "article-1",
+							title: "One"
+						},
+						{
+							id: "article-2",
+							title: "Two"
+						}
+					]
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		if (config.url.endsWith("/articles/article-1")) {
+			return {
+				config,
+				data: {
+					id: "article-1",
+					title: "One",
+					answer: "<p>Imported</p>",
+					modifiedTime: "2026-07-02T10:00:00.000Z"
+				},
+				headers: {},
+				status: 200,
+				statusText: "OK"
+			};
+		}
+
+		throw new Error(`Unexpected request URL: ${config.url}`);
+	}), async () => {
+		await zohoKnowledgeConnector.function({
+			config: {
+				connection: knowledgeConnection,
+				knowledgeSourcePrefix: "Zoho Desk",
+				rootCategoryId: "root-1",
+				categoryId: "agents-id",
+				includeChildCategories: false,
+				maxArticles: "1",
+				maxChunkCharacters: "500",
+				tags: []
+			},
+			sources: [
+				{
+					knowledgeSourceId: "stale-source",
+					name: "Zoho Desk: Support: Agents: Stale",
+					externalIdentifier: "zohoDesk:published:root-root-1:category-agents-id:children-false:permission-any:article:stale",
+					chunkCount: 1
+				}
+			],
+			api: {
+				upsertKnowledgeSource: async () => ({
+					knowledgeSourceId: "source-1"
+				}),
+				createKnowledgeChunk: async () => ({}),
+				deleteKnowledgeSource: async params => {
+					deletedSourceIds.push(params.knowledgeSourceId);
+					return {};
+				}
+			}
+		});
+	});
+
+	assert.deepStrictEqual(deletedSourceIds, []);
+};
+
+const assertKnowledgeDeleteStaleSources = async () => {
+	const deletedSourceIds = [];
+
+	await deleteStaleSources({
+		deleteKnowledgeSource: async params => {
+			deletedSourceIds.push(params.knowledgeSourceId);
+			return {};
+		}
+	}, [
+		{
+			knowledgeSourceId: "keep",
+			name: "Zoho Desk: Support: Keep",
+			externalIdentifier: "zohoDesk:published:scope:article:keep",
+			chunkCount: 1
+		},
+		{
+			knowledgeSourceId: "delete",
+			name: "Zoho Desk: Support: Delete",
+			externalIdentifier: "zohoDesk:published:scope:article:delete",
+			chunkCount: 1
+		},
+		{
+			knowledgeSourceId: "outside",
+			name: "Zoho Desk: Other: Delete",
+			externalIdentifier: "zohoDesk:published:other:article:delete",
+			chunkCount: 1
+		}
+	], new Set(["zohoDesk:published:scope:article:keep"]), "Zoho Desk", {
+		scopeKey: "scope",
+		scopeLabel: "Support",
+		categoryIds: [],
+		exhaustive: true
+	});
+
+	assert.deepStrictEqual(deletedSourceIds, ["delete"]);
 };
 
 const assertNoCacheGetHeaders = async () => {
@@ -633,6 +1257,14 @@ const assertUploadValidation = async () => {
 };
 
 const runAsyncSmoke = async () => {
+	assertKnowledgeValidationAndTextHelpers();
+	await assertKnowledgeScopeNameResolution();
+	await assertKnowledgeAmbiguousNamesFail();
+	await assertKnowledgeExactIdFallback();
+	await assertKnowledgeArticlePagination();
+	await assertKnowledgeConnectorImportsAndCleansScope();
+	await assertKnowledgeCleanupSkipsWhenTruncated();
+	await assertKnowledgeDeleteStaleSources();
 	await assertNoCacheGetHeaders();
 	await assertFilterBranchesAndStoresFreshResult();
 	await assertSequentialFilterCallsCanStoreDifferentInputKeys();

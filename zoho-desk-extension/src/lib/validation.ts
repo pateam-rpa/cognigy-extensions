@@ -47,6 +47,10 @@ export const integerInRange = (
 };
 
 export const optionalBoolean = (value: unknown, defaultValue: boolean): boolean => {
+	if (typeof value === "boolean") {
+		return value;
+	}
+
 	const text = optionalText(value);
 
 	if (text == null) {

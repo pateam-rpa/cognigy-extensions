@@ -1,10 +1,17 @@
 # Zoho Desk Extension
 
-This Cognigy extension adds Zoho Desk workflow nodes for tickets, ticket context, attachments, tags, contacts, and ticket resolutions.
+This Cognigy extension adds Zoho Desk workflow nodes for tickets, ticket context, attachments, tags, contacts, and ticket resolutions, plus a Knowledge Connector for published Zoho Desk help-center articles.
 
 The extension uses the Zoho Desk REST API `/api/v1` with Zoho's Self Client OAuth authorization-code flow. Cognigy stores a long-lived refresh token and uses it to refresh one-hour access tokens automatically.
 
 ## Version Log
+
+### 0.4.0 - 2026-07-02
+
+- Added `zohoDeskKnowledgeConnector` for importing published Zoho Desk help-center articles into Cognigy Knowledge.
+- Added root-category name and category-path resolution with exact ID fallbacks for duplicate-name cases.
+- Added scoped article-source cleanup, bounded pagination, plain-text article chunking, and smoke coverage for Knowledge imports.
+- Hardened article import edge cases for HTML line breaks, Zoho `"null"` version markers, detail responses with missing list metadata, and exact-limit cleanup decisions.
 
 ### 0.3.10 - 2026-06-26
 
@@ -67,7 +74,7 @@ The extension uses the Zoho Desk REST API `/api/v1` with Zoho's Self Client OAut
 
 ## OAuth Scopes
 
-Minimum scopes for the expanded node set:
+Minimum scopes for the expanded node set and article Knowledge Connector:
 
 - `Desk.tickets.READ`
 - `Desk.tickets.CREATE`
@@ -80,6 +87,7 @@ Minimum scopes for the expanded node set:
 - `Desk.contacts.READ`
 - `Desk.contacts.CREATE`
 - `Desk.contacts.UPDATE`
+- `Desk.articles.READ`
 
 Customers can use broader Zoho scopes if they prefer simpler OAuth setup over least privilege.
 
@@ -146,6 +154,31 @@ Create a Cognigy connection of type `Zoho Desk Self Client OAuth`.
 | `dataCenter` | Zoho data center code such as `com`, `eu`, `in`, `com.au`, `jp`, `ca`, `sa`, or `uk`. Defaults to `com` when empty. |
 
 The extension automatically resolves the Zoho Desk organization ID from `GET /organizations` and sends it as the `orgId` header for Desk API calls. If Zoho returns multiple organizations and no default can be identified, the node returns a clear error listing the available organization IDs.
+
+## Knowledge Connector
+
+`Zoho Desk Articles` imports published Zoho Desk help-center articles into Cognigy Knowledge. It uses the same `zoho-desk-oauth` connection as the workflow nodes and requires `Desk.articles.READ` on the refresh token.
+
+V1 imports article text only. It does not import tickets, ticket comments, attachments, or separate translated article variants.
+
+### Article Filters
+
+| Field | Description |
+| --- | --- |
+| `Knowledge Source Prefix` | Prefix used for Knowledge Source names. Defaults to `Zoho Desk`. |
+| `Root Category Name` | Optional root Knowledge Base category name, for example `Support`. Matching is case-insensitive and exact. |
+| `Category Path` | Optional path below the root, for example `Getting Started / Agents`. If empty, the matched root category is imported. |
+| `Root Category ID` | Optional exact fallback when multiple root categories share the same display name. |
+| `Category ID` | Optional exact fallback when multiple category or section names match the same path segment. |
+| `Include Child Categories` | When enabled, imports the selected category and all descendants. Defaults to enabled. |
+| `Permission` | Optional article permission filter. Valid values are empty, `ALL`, `REGISTEREDUSERS`, or `AGENTS`. |
+| `Maximum Articles` | Safety limit for one run. Defaults to `50`; allowed range is `1` to `500`. |
+| `Maximum Chunk Characters` | Maximum plain-text chunk size. Defaults to `2000`; allowed range is `500` to `3000`. |
+| `Tags` | Tags added to each Knowledge Source. Defaults to `zoho-desk` and `articles`. |
+
+If neither a root category nor a category is configured, the connector imports all published articles up to the configured safety limit. If a name or path segment is ambiguous, the run fails with matching names and IDs so the exact ID fields can be used.
+
+The connector fetches each article detail before import so it can use the full published answer. Source cleanup is scoped to the configured prefix, resolved category scope, and permission filter. Stale cleanup is skipped when the crawl hits `Maximum Articles` or when any list, detail, source, or chunk operation fails.
 
 ## Nodes and Endpoints
 
@@ -244,6 +277,8 @@ This extension intentionally excludes destructive or broad administrative operat
 - trash
 - broad admin/configuration APIs
 
+The Knowledge Connector also intentionally excludes ticket content, ticket comments, attachments, and translated article variants. It imports published help-center articles only.
+
 ## Result Storage
 
 Each node stores the Zoho response in either Input or Context. Default keys use the `zohoDesk` namespace, for example:
@@ -319,6 +354,9 @@ Manual acceptance tests require real Zoho credentials:
 
 - create a Zoho Self Client and exchange a grant code for a refresh token
 - create a Cognigy connection with `clientId`, `clientSecret`, `refreshToken`, and `dataCenter`
+- configure `Zoho Desk Articles` with a root category name and optional category path
+- import a small published category and confirm Knowledge Sources and chunks are created
+- verify duplicate-name categories can be selected with `Root Category ID` or `Category ID`
 - list departments, agents, and reply addresses
 - create a public and private ticket comment
 - list threads and conversations
@@ -337,3 +375,5 @@ Manual acceptance tests require real Zoho credentials:
 - Zoho Self Client overview: https://www.zoho.com/accounts/protocol/oauth/self-client/overview.html
 - Zoho Self Client authorization-code flow: https://www.zoho.com/accounts/protocol/oauth/self-client/authorization-code-flow.html
 - Zoho Desk API: https://desk.zoho.com/DeskAPIDocument
+- Zoho Desk list articles: https://desk.zoho.com/DeskAPIDocument#Articles_Listarticles
+- Zoho Desk get article: https://desk.zoho.com/DeskAPIDocument#Articles_Getarticle

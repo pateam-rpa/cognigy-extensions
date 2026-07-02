@@ -1,6 +1,7 @@
 import { createExtension } from "@cognigy/extension-tools";
 
 import { zohoDeskOAuthConnection } from "./connections/zohoDeskOAuthConnection";
+import { zohoDeskKnowledgeConnector } from "./knowledge-connectors/zohoDeskKnowledgeConnector";
 import { listTicketAttachmentsNode, uploadTicketAttachmentNode } from "./nodes/attachments/attachments";
 import { createContactNode, getContactNode, listContactsNode, listTicketsByContactNode, updateContactNode } from "./nodes/contacts/contacts";
 import { listAgentsNode, listDepartmentsNode, listMailReplyAddressesNode } from "./nodes/discovery/discovery";
@@ -63,6 +64,10 @@ export default createExtension({
 
 	connections: [
 		zohoDeskOAuthConnection
+	],
+
+	knowledge: [
+		zohoDeskKnowledgeConnector
 	],
 
 	options: {
