@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cognigy Extension Security Hygiene"
+  short_description: "Scan and sanitize Cognigy extension repos"
+  default_prompt: "Use $cognigy-extension-security-release-hygiene to scan a Cognigy extension repo before making it public."

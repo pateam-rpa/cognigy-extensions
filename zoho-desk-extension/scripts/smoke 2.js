@@ -39,7 +39,6 @@ assert.deepStrictEqual(connectionFieldNames, [
 	"listMailReplyAddresses",
 	"listTicketThreads",
 	"listTicketConversations",
-	"listTicketComments",
 	"addTicketComment",
 	"listTicketAttachments",
 	"uploadTicketAttachment",
@@ -64,7 +63,6 @@ assert.deepStrictEqual(connectionFieldNames, [
 const getTicketNode = extension.nodes.find(node => node.type === "getTicket");
 const filterTicketsNode = extension.nodes.find(node => node.type === "filterTickets");
 const replyToTicketNode = extension.nodes.find(node => node.type === "replyToTicket");
-const listTicketCommentsNode = extension.nodes.find(node => node.type === "listTicketComments");
 const uploadTicketAttachmentNode = extension.nodes.find(node => node.type === "uploadTicketAttachment");
 
 assert.deepStrictEqual(getTicketNode.dependencies.children, [
@@ -91,11 +89,6 @@ const replyFieldKeys = replyToTicketNode.fields.map(field => field.key);
 });
 
 assert(!replyFieldKeys.includes("isPublic"), "Reply to Ticket should send email replies, not comments.");
-
-const commentFieldDefaults = Object.fromEntries(listTicketCommentsNode.fields.map(field => [field.key, field.defaultValue]));
-assert.strictEqual(commentFieldDefaults.commentLimit, "0");
-assert.strictEqual(commentFieldDefaults.commentAuthorType, "both");
-assert.strictEqual(commentFieldDefaults.pageSize, "100");
 
 assert.deepStrictEqual(getZohoDeskBaseUrls(), {
 	accountsBaseUrl: "https://accounts.zoho.com",
@@ -357,228 +350,6 @@ const assertSequentialFilterCallsCanStoreDifferentInputKeys = async () => {
 	assert.deepStrictEqual(filterCognigy.input.zohoDesk.similarTickets, { data: [{ id: "similar-ticket" }] });
 };
 
-const assertListTicketCommentsFiltersSortsAndLimits = async () => {
-	const originalAdapter = axios.defaults.adapter;
-	const inputWrites = [];
-	const requests = [];
-
-	axios.defaults.adapter = async config => {
-		requests.push(config);
-
-		if (config.url.endsWith("/oauth/v2/token")) {
-			return {
-				config,
-				data: { access_token: "access-token" },
-				headers: {},
-				status: 200,
-				statusText: "OK"
-			};
-		}
-
-		const pages = {
-			0: [
-				{
-					id: "old-agent",
-					createdTime: "2026-06-24T10:00:00.000Z",
-					commentedBy: {
-						type: "agent"
-					}
-				},
-				{
-					id: "new-customer",
-					createdTime: "2026-06-26T10:00:00.000Z",
-					commentedBy: {
-						type: "customer"
-					}
-				}
-			],
-			2: [
-				{
-					id: "new-agent",
-					createdTime: "2026-06-25T10:00:00.000Z",
-					commentedBy: {
-						type: "agent"
-					}
-				},
-				{
-					id: "older-agent",
-					createdTime: "2026-06-23T10:00:00.000Z",
-					commentedBy: {
-						type: "agent"
-					}
-				}
-			]
-		};
-
-		return {
-			config,
-			data: {
-				data: pages[config.params.from] || []
-			},
-			headers: {},
-			status: 200,
-			statusText: "OK"
-		};
-	};
-
-	try {
-		await listTicketCommentsNode.function({
-			cognigy: {
-				input: {},
-				context: {},
-				api: {
-					addToContext: () => {
-						throw new Error("Input storage should not write to context.");
-					},
-					addToInput: (...args) => inputWrites.push(args)
-				}
-			},
-			config: {
-				connection: {
-					clientId: "client-id",
-					clientSecret: "client-secret",
-					refreshToken: "refresh-token",
-					orgId: "123456789",
-					dataCenter: "eu"
-				},
-				storeLocation: "input",
-				inputKey: "zohoDesk.comments",
-				contextKey: "",
-				ticketId: "ticket-id",
-				commentLimit: "2",
-				commentAuthorType: "agent",
-				pageSize: "2",
-				rawQueryParams: "{}"
-			}
-		});
-	} finally {
-		axios.defaults.adapter = originalAdapter;
-	}
-
-	const commentRequests = requests.filter(request => request.url.endsWith("/tickets/ticket-id/comments"));
-
-	assert.deepStrictEqual(commentRequests.map(request => request.params), [
-		{
-			from: 0,
-			limit: 2
-		},
-		{
-			from: 2,
-			limit: 2
-		},
-		{
-			from: 4,
-			limit: 2
-		}
-	]);
-	assert.deepStrictEqual(inputWrites, [
-		[
-			"zohoDesk.comments",
-			{
-				data: [
-					{
-						id: "new-agent",
-						createdTime: "2026-06-25T10:00:00.000Z",
-						commentedBy: {
-							type: "agent"
-						}
-					},
-					{
-						id: "old-agent",
-						createdTime: "2026-06-24T10:00:00.000Z",
-						commentedBy: {
-							type: "agent"
-						}
-					}
-				]
-			}
-		]
-	]);
-};
-
-const assertListTicketCommentsZeroLimitReturnsAll = async () => {
-	const originalAdapter = axios.defaults.adapter;
-	const inputWrites = [];
-
-	axios.defaults.adapter = async config => {
-		if (config.url.endsWith("/oauth/v2/token")) {
-			return {
-				config,
-				data: { access_token: "access-token" },
-				headers: {},
-				status: 200,
-				statusText: "OK"
-			};
-		}
-
-		return {
-			config,
-			data: {
-				data: config.params.from === 0
-					? [
-						{
-							id: "older-customer",
-							createdTime: "2026-06-24T10:00:00.000Z",
-							commentedBy: {
-								type: "customer"
-							}
-						},
-						{
-							id: "new-customer",
-							createdTime: "2026-06-26T10:00:00.000Z",
-							commentedBy: {
-								type: "customer"
-							}
-						}
-					]
-					: []
-			},
-			headers: {},
-			status: 200,
-			statusText: "OK"
-		};
-	};
-
-	try {
-		await listTicketCommentsNode.function({
-			cognigy: {
-				input: {},
-				context: {},
-				api: {
-					addToContext: () => {
-						throw new Error("Input storage should not write to context.");
-					},
-					addToInput: (...args) => inputWrites.push(args)
-				}
-			},
-			config: {
-				connection: {
-					clientId: "client-id",
-					clientSecret: "client-secret",
-					refreshToken: "refresh-token",
-					orgId: "123456789",
-					dataCenter: "eu"
-				},
-				storeLocation: "input",
-				inputKey: "zohoDesk.comments",
-				contextKey: "",
-				ticketId: "ticket-id",
-				commentLimit: "0",
-				commentAuthorType: "both",
-				pageSize: "2",
-				rawQueryParams: "{}"
-			}
-		});
-	} finally {
-		axios.defaults.adapter = originalAdapter;
-	}
-
-	assert.deepStrictEqual(inputWrites[0][1].data.map(comment => comment.id), [
-		"new-customer",
-		"older-customer"
-	]);
-};
-
 const assertStoredNodeError = async (node, config, expectedMessage) => {
 	const inputWrites = [];
 
@@ -636,8 +407,6 @@ const runAsyncSmoke = async () => {
 	await assertNoCacheGetHeaders();
 	await assertFilterBranchesAndStoresFreshResult();
 	await assertSequentialFilterCallsCanStoreDifferentInputKeys();
-	await assertListTicketCommentsFiltersSortsAndLimits();
-	await assertListTicketCommentsZeroLimitReturnsAll();
 	await assertUploadValidation();
 };
 

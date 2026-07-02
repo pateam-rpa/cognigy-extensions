@@ -9,7 +9,7 @@ import { addTagToTicketNode, listTagsInTicketNode, listTicketTagsNode, removeTag
 import { createTicketNode } from "./nodes/tickets/createTicket";
 import { filterTicketsNode, onErrorTicketsByFilter, onFoundTicketByFilter, onNotFoundTicketsByFilter } from "./nodes/tickets/filterTickets";
 import { getTicketNode, onErrorTicket, onFoundTicket, onNotFoundTicket } from "./nodes/tickets/getTicket";
-import { addTicketCommentNode, listTicketCommentsNode, listTicketConversationsNode, listTicketThreadsNode } from "./nodes/tickets/context";
+import { addTicketCommentNode, listTicketConversationsNode, listTicketThreadsNode } from "./nodes/tickets/context";
 import { replyToTicketNode } from "./nodes/tickets/replyToTicket";
 import { updateTicketNode } from "./nodes/tickets/updateTicket";
 
@@ -37,7 +37,6 @@ export default createExtension({
 
 		listTicketThreadsNode,
 		listTicketConversationsNode,
-		listTicketCommentsNode,
 		addTicketCommentNode,
 
 		listTicketAttachmentsNode,

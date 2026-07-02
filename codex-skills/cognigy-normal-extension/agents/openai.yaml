@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cognigy Normal Extension"
+  short_description: "Build and maintain Cognigy node extensions"
+  default_prompt: "Use $cognigy-normal-extension to update a Cognigy workflow-node extension safely."

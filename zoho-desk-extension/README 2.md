@@ -9,7 +9,6 @@ The extension uses the Zoho Desk REST API `/api/v1` with Zoho's Self Client OAut
 ### 0.3.10 - 2026-06-26
 
 - Added smoke coverage and runtime troubleshooting guidance for running Filter Tickets twice with different configured result keys in the same Cognigy execution.
-- Added `listTicketComments` for retrieving ticket comments with newest-first limiting and agent/customer/both author filtering.
 
 ### 0.3.9 - 2026-06-26
 
@@ -177,10 +176,8 @@ Discovery nodes support pagination and raw query parameter JSON for Zoho-specifi
 | --- | --- |
 | `listTicketThreads` | `GET /tickets/{ticketId}/threads` |
 | `listTicketConversations` | `GET /tickets/{ticketId}/conversations` |
-| `listTicketComments` | `GET /tickets/{ticketId}/comments` |
 | `addTicketComment` | `POST /tickets/{ticketId}/comments` |
 
-`listTicketComments` supports a Comment Limit where `0` or empty returns all matching comments. Positive limits return the top matching comments after newest-first sorting and optional agent/customer/both author filtering.
 `addTicketComment` supports `content`, `isPublic`, `contentType`, and optional `attachmentIds`.
 
 ### Attachments
@@ -256,7 +253,6 @@ Each node stores the Zoho response in either Input or Context. Default keys use 
 - `zohoDesk.mailReplyAddresses`
 - `zohoDesk.threads`
 - `zohoDesk.conversations`
-- `zohoDesk.comments`
 - `zohoDesk.comment`
 - `zohoDesk.attachments`
 - `zohoDesk.attachment`

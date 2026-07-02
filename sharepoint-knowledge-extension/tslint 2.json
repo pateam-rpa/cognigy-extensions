@@ -1,0 +1,14 @@
+{
+  "rules": {
+    "no-trailing-whitespace": true,
+    "no-var-keyword": true,
+    "semicolon": [
+      true,
+      "always"
+    ],
+    "triple-equals": [
+      true,
+      "allow-null-check"
+    ]
+  }
+}
